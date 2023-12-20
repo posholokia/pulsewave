@@ -38,7 +38,7 @@ build: &build_definition
   after_script:
     - echo "DEPLOY_ENVIRONMENT=${CI_ENVIRONMENT_NAME}" > build.env
     - echo "DEPLOY_URL=${CI_ENVIRONMENT_URL}" >> build.env
-    - echo "CI_FAILED_STAGE=${CI_BUILD_STAGE}" >> build.env
+    - echo "CI_FAILED_STAGE=${CI_JOB_STAGE}" >> build.env
   artifacts:
     paths:
       - tags.json
@@ -80,7 +80,7 @@ deploy_prod: &deploy_definition
   after_script:
     - echo "DEPLOY_ENVIRONMENT=${CI_ENVIRONMENT_NAME}" > build.env
     - echo "DEPLOY_URL=${CI_ENVIRONMENT_URL}" >> build.env
-    - echo "CI_FAILED_STAGE=${CI_BUILD_STAGE}" >> build.env
+    - echo "CI_FAILED_STAGE=${CI_JOB_STAGE}" >> build.env
   rules:
     - if: $CI_COMMIT_BRANCH == 'master'
       when: on_success

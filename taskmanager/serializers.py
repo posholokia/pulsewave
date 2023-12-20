@@ -10,7 +10,6 @@ from django.contrib.auth import authenticate
 from django.core.files.storage import default_storage
 
 from djoser.serializers import (SendEmailResetSerializer,
-                                UserCreatePasswordRetypeSerializer,
                                 PasswordRetypeSerializer,
                                 CurrentPasswordSerializer)
 from djoser.conf import settings as djoser_settings
@@ -18,7 +17,6 @@ from djoser.conf import settings as djoser_settings
 from workspaces.models import InvitedUsers
 from .token import token_generator
 from .utils import proportional_reduction, get_resized_django_obj
-from .tasks import delete_inactive_user
 from PIL import Image
 
 User = get_user_model()
@@ -93,7 +91,7 @@ class PasswordResetSerializer(SendEmailResetSerializer):
         Переопределен, чтобы дать возможность сбросить пароль неактивированному юзеру.
         """
         try:
-            user = User._default_manager.get(
+            user = User.objects.get(
                 **{self.email_field: self.data.get(self.email_field, "")},
             )
             return user
@@ -249,13 +247,6 @@ class SetPasswordSerializer(PasswordRetypeSerializer, CurrentPasswordSerializer)
             return super().validate(attrs)
 
         raise exceptions.ValidationError({'new_password': 'Новый пароль совпадает с текущим'}, )
-
-
-class CreateUserSerializer(UserCreatePasswordRetypeSerializer):
-    def perform_create(self, validated_data):
-        user = super().perform_create(validated_data)
-        delete_inactive_user.apply_async((user.id,), countdown=24*60*60)
-        return user
 
 
 class InvitedPasswordSerializer(PasswordRetypeSerializer):

@@ -4,15 +4,15 @@ import random
 from rest_framework import viewsets, permissions, status, generics
 from rest_framework.response import Response
 from rest_framework.decorators import action
-
 from django.contrib.auth import get_user_model
 from django_eventstream import send_event
 
 from drf_spectacular.utils import extend_schema, extend_schema_view
 
 from taskmanager.serializers import CurrentUserSerializer
-from .models import WorkSpace, Board, InvitedUsers
+from .models import WorkSpace, Board, InvitedUsers, Column, Task
 from . import serializers, mixins
+from .permissions import UserInWorkSpaceUsers, UserIsBoardMember, UserHasAccessTasks
 from .serializers import InviteUserSerializer
 
 User = get_user_model()
@@ -28,15 +28,16 @@ User = get_user_model()
 )
 class WorkSpaceViewSet(mixins.GetInvitationMixin,
                        mixins.UserNoAuthOrThisUser,
+                       mixins.CheckWorkSpaceUsersMixin,
                        viewsets.ModelViewSet):
     serializer_class = serializers.WorkSpaceSerializer
-    queryset = WorkSpace.objects.all()
+    queryset = WorkSpace.objects.all().select_related('owner').prefetch_related('users', 'invited', 'board')
     permission_classes = [permissions.IsAuthenticated]
 
     def get_serializer_class(self):
         if self.action == 'create':
             return serializers.CreateWorkSpaceSerializer
-        if self.action == 'invite_user':
+        elif self.action == 'invite_user':
             return serializers.WorkSpaceInviteSerializer
         elif self.action == 'confirm_invite':
             return serializers.InviteUserSerializer
@@ -108,18 +109,22 @@ class WorkSpaceViewSet(mixins.GetInvitationMixin,
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        user = serializer.invitation.user
-        workspace = serializer.invitation.workspace
+        self.user = serializer.invitation.user
+        self.workspace = serializer.invitation.workspace
 
-        if not self.check_auth_user(user):
+        if not self.check_auth_user(self.user):
             return Response(status=status.HTTP_403_FORBIDDEN)
 
-        workspace.invited.remove(user)
-        workspace.users.add(user)
-
+        # если пользователь уже добавлен в РП, но не закончил регистрацию, нужно вернуть ответ,
+        # по которому его направят на установку пароля
         data = InviteUserSerializer(serializer.invitation).data
+        if not self.user.has_usable_password() and self.user_is_added_to_workspace():
+            return Response(data=data, status=status.HTTP_200_OK)
 
-        if user.has_usable_password():
+        self.workspace.invited.remove(self.user)
+        self.workspace.users.add(self.user)
+
+        if self.user.has_usable_password():
             serializer.invitation.delete()
             return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -133,6 +138,7 @@ class WorkSpaceViewSet(mixins.GetInvitationMixin,
         serializer.is_valid(raise_exception=True)
 
         user_id = serializer.data['user_id']
+
         self.workspace = WorkSpace.objects.get(pk=kwargs['pk'])
 
         if user_id == self.workspace.owner_id:
@@ -220,9 +226,7 @@ class TestSSEUser(generics.CreateAPIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-@extend_schema_view(list=extend_schema(description='Список всех досок этого пользователя. '
-                                                   'Для получения досок конкретного РП нужно передать query параметр'
-                                                   '"space_id": /api/board/?space_id=4'),
+@extend_schema_view(list=extend_schema(description='Список всех досок указанного РП.'),
                     create=extend_schema(description='Создать Доску'),
                     retrieve=extend_schema(description='Информация о конкретной доске'),
                     update=extend_schema(description='Обновить доску'),
@@ -230,23 +234,123 @@ class TestSSEUser(generics.CreateAPIView):
                     destroy=extend_schema(description='Удалить доску'),
                     )
 class BoardViewSet(viewsets.ModelViewSet):
+    """Представление досок"""
     serializer_class = serializers.BoardSerializer
-    queryset = Board.objects.all()
-    permission_classes = [permissions.IsAuthenticated]
+    queryset = Board.objects.all().prefetch_related('column_board', 'members')
+    permission_classes = [permissions.IsAuthenticated, UserInWorkSpaceUsers]
 
     def get_queryset(self):
         queryset = super().get_queryset()
         user = self.request.user
-        queryset = queryset.filter(work_space__users=user)
-        workspace = self.request.query_params.get('space_id')
+        workspace = self.kwargs.get('workspace_id')
+        queryset = (queryset
+                    .filter(work_space__users=user)
+                    .filter(work_space_id=workspace)
+                    )
 
-        if workspace:
-            queryset = queryset.filter(work_space=workspace)
-
-        return queryset
+        return queryset.order_by('-id')
 
     def get_serializer_class(self):
         if self.action == 'create':
             return serializers.CreateBoardSerializer
 
         return super().get_serializer_class()
+
+
+class BoardCreateWithoutWorkSpace(mixins.DefaultWorkSpaceMixin,
+                                  generics.CreateAPIView):
+    """Создание доски вне РП"""
+    serializer_class = serializers.CreateBoardNoWorkSpaceSerializer
+    queryset = Board.objects.all()
+    permission_classes = [permissions.IsAuthenticated]
+
+
+@extend_schema_view(list=extend_schema(description='Список всех колонок доски.'),
+                    create=extend_schema(description='Создать колонку на доске'),
+                    retrieve=extend_schema(description='Информация о конкретной колонке'),
+                    update=extend_schema(description='Обновить колонку (название и порядковый номер)'),
+                    partial_update=extend_schema(description='Частично обновить колонку (название/порядковый номер)'),
+                    destroy=extend_schema(description='Удалить колонку'),
+                    )
+class ColumnViewSet(mixins.ShiftIndexMixin,
+                    mixins.ShiftIndexAfterDeleteMixin,
+                    viewsets.ModelViewSet):
+    serializer_class = serializers.ColumnSerializer
+    queryset = Column.objects.all()
+    permission_classes = [permissions.IsAuthenticated, UserIsBoardMember]
+
+    def get_serializer_class(self):
+        if self.action == 'create':
+            return serializers.CreateColumnSerializer
+
+        return super().get_serializer_class()
+
+    def get_queryset(self):
+        """Колонки отфилрованы по доске"""
+        queryset = super().get_queryset()
+        board_id = self.kwargs.get('board_id', None)
+        queryset = queryset.filter(board_id=board_id)
+        return queryset.order_by('index')
+
+    def destroy(self, request, *args, **kwargs):
+        """
+        При удалении колонки перезаписывает порядковые номера оставшихся колонок
+        """
+        instance = self.get_object()
+        self.delete_shift_index(instance)
+        self.perform_destroy(instance)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class TaskViewSet(mixins.ShiftIndexMixin,
+                  mixins.ShiftIndexAfterDeleteMixin,
+                  viewsets.ModelViewSet):
+    serializer_class = serializers.TaskSerializer
+    queryset = Task.objects.all()
+    permission_classes = [permissions.IsAuthenticated, UserHasAccessTasks]
+
+    def get_serializer_class(self):
+        if self.action == 'create':
+            return serializers.TaskCreateSerializer
+
+        return super().get_serializer_class()
+
+    def get_queryset(self):
+        """Задачи фильтруются по колонкам"""
+        queryset = super().get_queryset()
+        column_id = self.kwargs.get('column_id', None)
+        queryset = (queryset
+                    .filter(column_id=column_id)
+                    .select_related('column')
+                    .select_related('column__board')
+                    )
+        return queryset.order_by('index')
+
+    def destroy(self, request, *args, **kwargs):
+        """
+        При удалении задачи перезаписывает порядковые номера оставшихся задач
+        """
+        instance = self.get_object()
+        self.delete_shift_index(instance)
+        self.perform_destroy(instance)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    def update(self, request, *args, **kwargs):
+        """Обновление задач"""
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+
+        if getattr(instance, '_prefetched_objects_cache', None):
+            instance._prefetched_objects_cache = {}
+
+        current_column = kwargs.get('column_id', None)
+        new_column = serializer.validated_data.get('column', None)
+
+        # если задачу переместили в другую колонку, в текущей порядковые номера нужно сдвинуть
+        if new_column is not None and new_column != current_column:
+            self.delete_shift_index(instance)
+
+        return Response(serializer.data)

@@ -22,6 +22,7 @@ class ChangeEmail(BaseEmailMessage):
 
         context['token'] = token_generator.token_encode(payload)
         context['url'] = settings.DJOSER['CHANGE_EMAIL_URL'].format(**context)
+        context['subject'] = 'olololol'
         return context
 
 
@@ -32,6 +33,7 @@ class InviteUserEmail(BaseEmailMessage):
         context = super().get_context_data()
 
         invitation = context['invitation']
+
         context['token'] = invitation.token
         context['url'] = settings.WORKSAPCES['INVITE_USER_EMAIL_URL'].format(**context)
         return context

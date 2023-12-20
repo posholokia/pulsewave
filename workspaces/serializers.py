@@ -9,15 +9,13 @@ from rest_framework.exceptions import ValidationError
 from pulsewave.settings import WORKSAPCES
 from taskmanager.serializers import CurrentUserSerializer
 from . import mixins
-from .models import WorkSpace, Board, InvitedUsers
+from .models import WorkSpace, Board, InvitedUsers, Task, Column
 
 User = get_user_model()
 
 
 class CreateWorkSpaceSerializer(serializers.ModelSerializer):
-    """
-    Сериализотор создания РП
-    """
+    """Сериализотор создания РП"""
     # поле owner скрыто для редактирования и автоматически заполняется текущим пользователем
     owner = serializers.HiddenField(default=serializers.CurrentUserDefault())
 
@@ -40,24 +38,51 @@ class CreateWorkSpaceSerializer(serializers.ModelSerializer):
 
 
 class WorkspaceBoardsSerializer(serializers.ModelSerializer):
-    members = CurrentUserSerializer(many=True, read_only=True)
+    """Сериализация досок внутри РП"""
 
     class Meta:
         model = Board
         fields = (
             'id',
             'name',
-            'members',
         )
 
 
+class UserListWorkSpace(serializers.ModelSerializer):
+    """Сериализация пользователей внутри РП"""
+    represent_name = serializers.SerializerMethodField()
+    role = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        read_only_fields = ['email']
+        fields = (
+            'id',
+            'email',
+            'name',
+            'represent_name',
+            'avatar',
+            'role',
+        )
+
+    def get_role(self, obj):
+        workspace = self.context.get("workspace", None)
+
+        if not workspace:
+            return 'Invited'
+        elif workspace.owner.id == obj.id:
+            return 'Owner'
+        else:
+            return 'Member'
+
+    def get_represent_name(self, obj):
+        return obj.name if obj.name else obj.email.split('@')[0]
+
+
 class WorkSpaceSerializer(serializers.ModelSerializer):
-    """
-   Сериализотор РП
-   """
-    users = CurrentUserSerializer(many=True, read_only=True)
-    invited = CurrentUserSerializer(many=True, read_only=True)
     boards = WorkspaceBoardsSerializer(many=True, read_only=True, source='board')
+    users = serializers.SerializerMethodField()
+    invited = UserListWorkSpace(many=True, read_only=True)
 
     class Meta:
         model = WorkSpace
@@ -68,6 +93,16 @@ class WorkSpaceSerializer(serializers.ModelSerializer):
             'invited',
             'boards',
         )
+
+    def get_users(self, obj):
+        users_list = obj.users.all()
+        users = UserListWorkSpace(users_list, many=True, read_only=True, context={'workspace': obj}).data
+        return users
+
+    def to_representation(self, instance):
+        representation = super().to_representation(instance)
+        representation['boards'] = sorted(representation['boards'], key=lambda x: x['id'], reverse=True)
+        return representation
 
 
 class WorkSpaceInviteSerializer(mixins.GetWorkSpaceMixin,
@@ -136,28 +171,13 @@ class InviteUserSerializer(mixins.GetInvitedMixin,
         time_out = timedelta(seconds=WORKSAPCES['INVITE_TOKEN_TIMEOUT'])
         expired_token = self.invitation.created_at + time_out
 
-        self.workspace = self.invitation.workspace
-        self.user = self.invitation.user
-
         if now() > expired_token:
             raise ValidationError(
                 {"token": self.default_error_messages['token_expired']},
                 'token_expired'
             )
 
-        if self.user_is_added_to_workspace():
-            raise ValidationError(
-                {"token": self.default_error_messages['already_invited']},
-                'already_invited'
-            )
-
-        if self.user_is_invited_to_workspace():
-            return attrs
-
-        raise ValidationError(
-            {"token": self.default_error_messages['invalid_token']},
-            'invalid_token'
-        )
+        return attrs
 
 
 class UserListSerializer(serializers.ModelSerializer):
@@ -246,6 +266,7 @@ class CreateBoardSerializer(serializers.ModelSerializer):
     """
     Сериализатор создания доски
     """
+    work_space = serializers.PrimaryKeyRelatedField(queryset=WorkSpace.objects.all(), required=False)
 
     class Meta:
         model = Board
@@ -255,12 +276,16 @@ class CreateBoardSerializer(serializers.ModelSerializer):
             'work_space',
         )
 
+    def create(self, validated_data):
+        workspace_id = self.context['view'].kwargs.get('workspace_id', None)
+        validated_data['work_space_id'] = workspace_id
+        instance = Board.objects.create(**validated_data)
+        return instance
 
-class BoardSerializer(serializers.ModelSerializer):
-    """
-    Сериализатор доски
-    """
-    members = CurrentUserSerializer(many=True, read_only=True)
+
+class CreateBoardNoWorkSpaceSerializer(mixins.DefaultWorkSpaceMixin,
+                                       serializers.ModelSerializer):
+    """Создание доски вне РП, РП создается автоматически для доски"""
 
     class Meta:
         model = Board
@@ -269,5 +294,235 @@ class BoardSerializer(serializers.ModelSerializer):
             'id',
             'name',
             'work_space',
-            'members',
         )
+
+    def create(self, validated_data):
+        user = self.context.get('request', None).user
+        workspace = self.create_default_workspace(user, create_for_board=True)
+        validated_data['work_space'] = workspace
+        instance = Board.objects.create(**validated_data)
+        return instance
+
+
+class TaskCreateSerializer(serializers.ModelSerializer):
+    """Сериализатор создания задач"""
+
+    class Meta:
+        model = Task
+        read_only_fields = ['column', 'index', 'responsible', ]
+        fields = (
+            'id',
+            'name',
+            'index',
+            'column',
+            'responsible',
+            'deadline',
+            'description',
+            # 'file',
+            'priority',
+            'color_mark',
+            'name_mark',
+        )
+
+    def create(self, validated_data):
+        number_of_tasks = len(self.context["view"].get_queryset())
+        column_id = self.context['view'].kwargs['column_id']
+
+        validated_data['index'] = number_of_tasks
+        validated_data['column_id'] = column_id
+
+        instance = Task.objects.create(**validated_data)
+        return instance
+
+
+class TaskListSerializer(mixins.ShiftIndexMixin,
+                         serializers.ModelSerializer):
+    """Сериализатор списка задач"""
+    responsible = CurrentUserSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Task
+        read_only_fields = ['column']
+        fields = (
+            'id',
+            'name',
+            'index',
+            'column',
+            'responsible',
+            'priority',
+            'color_mark',
+            'name_mark',
+        )
+
+
+class TaskUsersListSerializer(serializers.ListSerializer):
+    def validate(self, attrs):
+        column_id = self.context["view"].kwargs['column_id']
+        column = (Column.objects.select_related('board__work_space')
+                  .only('board__work_space__users')
+                  .get(pk=column_id))
+        users = column.board.work_space.users.all().values_list('id')
+        for user_id in attrs:
+            if (user_id,) not in users:
+                raise ValidationError(
+                    {"responsible": f'Пользователь id:{user_id} не добавлен в рабочее пространство'},
+                    'invalid_user'
+                )
+        return attrs
+
+    def to_representation(self, data):
+        iterable = data.all()
+
+        return [
+            CurrentUserSerializer(item).data for item in iterable
+        ]
+
+
+class TaskSerializer(mixins.ShiftIndexMixin,
+                     mixins.IndexValidateMixin,
+                     mixins.ColumnValidateMixin,
+                     serializers.ModelSerializer):
+    """Сериализатор задач"""
+    responsible = TaskUsersListSerializer(child=serializers.IntegerField())
+
+    class Meta:
+        model = Task
+        fields = (
+            'id',
+            'name',
+            'index',
+            'column',
+            'responsible',
+            'deadline',
+            'description',
+            # 'file',
+            'priority',
+            'color_mark',
+            'name_mark',
+        )
+
+    # def to_representation(self, instance):
+    #     representation = super().to_representation(instance)
+    #     users = self.instance.responsible.all()
+    #     representation['responsible'] = CurrentUserSerializer(users, many=True).data
+    #     return representation
+
+    def validate(self, attrs):
+        new_index = attrs.get('index', None)
+        new_col = attrs.get('column', None)
+
+        if (new_col is not None) and (self.instance.column != new_col):
+            self.column_validate(new_index, new_col)
+            return attrs
+        elif new_index is not None:
+            self.index_validate(new_index, new_col)  # 1
+            # если у задачи не сменилась колонка, удаляем из атрибутов,
+            # обновлять ее у обьекта не требуется
+            # иначе в методе update сработает insert вместо shift
+            attrs.pop('column', None)
+
+        return attrs
+
+    def update(self, instance, validated_data):
+        """При перемещении задач их порядковые номера нужно пересчитать"""
+        new_index = validated_data.pop('index', None)
+        new_col = validated_data.pop('column', None)
+        users = validated_data.pop('responsible', None)
+
+        if users is not None:
+            instance.responsible.set(users)
+
+        if new_col is not None:
+            instance = self.insert_object(instance, new_index)
+        elif new_index is not None:
+            instance = self.shift_indexes(instance, new_index)
+
+        return super().update(instance, validated_data)
+
+
+class CreateColumnSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Column
+        read_only_fields = ['index', 'board']
+        fields = (
+            'id',
+            'name',
+            'board',
+            'index',
+        )
+
+    def create(self, validated_data):
+        number_of_columns = len(self.context["view"].get_queryset())
+        board_pk = self.context['view'].kwargs['board_id']
+
+        validated_data['index'] = number_of_columns
+        validated_data['board_id'] = board_pk
+
+        instance = Column.objects.create(**validated_data)
+        return instance
+
+
+class ColumnSerializer(mixins.ShiftIndexMixin,
+                       mixins.IndexValidateMixin,
+                       serializers.ModelSerializer):
+    """Сериализатор колонки с задачами"""
+    tasks = TaskListSerializer(many=True, source='task', read_only=True)
+
+    class Meta:
+        model = Column
+        read_only_fields = ['board']
+        fields = (
+            'id',
+            'name',
+            'index',
+            'board',
+            'tasks',
+        )
+
+    def to_representation(self, instance):
+        representation = super().to_representation(instance)
+        representation['tasks'] = sorted(representation['tasks'], key=lambda x: x['index'])
+        return representation
+
+    def validate(self, attrs):
+        new_index = attrs.get('index', None)
+
+        if new_index is not None:
+            self.index_validate(new_index)
+
+        return attrs
+
+    def update(self, instance, validated_data):
+        new_index = validated_data.pop('index', None)
+
+        if new_index is not None:
+            instance = self.shift_indexes(instance, new_index)
+
+        return super().update(instance, validated_data)
+
+
+class BoardSerializer(serializers.ModelSerializer):
+    """
+    Сериализатор доски
+    """
+    # members = CurrentUserSerializer(many=True, read_only=True)
+    columns = ColumnSerializer(many=True, read_only=True, source='column_board')
+
+    class Meta:
+        model = Board
+        read_only_fields = ['members', 'work_space']
+        fields = (
+            'id',
+            'name',
+            'work_space',
+            'members',
+            'columns',
+        )
+
+    def to_representation(self, instance):
+        representation = super().to_representation(instance)
+        representation['columns'] = sorted(representation['columns'], key=lambda x: x['index'])
+        users = instance.work_space.users.all()
+        # удалить после реализации добавления участников доски
+        representation['members'] = CurrentUserSerializer(users, many=True).data
+        return representation

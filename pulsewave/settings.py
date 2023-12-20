@@ -179,7 +179,6 @@ DJOSER = {
         'current_user': 'taskmanager.serializers.CurrentUserSerializer',
         'user': 'taskmanager.serializers.CurrentUserSerializer',
         'set_password_retype': 'taskmanager.serializers.SetPasswordSerializer',
-        'user_create_password_retype': 'taskmanager.serializers.CreateUserSerializer',
     },
     'TOKEN_MODEL': None,
     'USER_CREATE_PASSWORD_RETYPE': True,

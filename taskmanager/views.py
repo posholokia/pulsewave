@@ -18,12 +18,13 @@ from taskmanager.serializers import (ChangeEmailSerializer,
                                      ChangeEmailConfirmSerializer,
                                      PasswordResetSerializer,
                                      InvitedPasswordSerializer)
-from taskmanager.utils import create_default_ws
+from workspaces import mixins
 
 User = get_user_model()
 
 
-class CustomUserViewSet(UserViewSet):
+class CustomUserViewSet(mixins.DefaultWorkSpaceMixin,
+                        UserViewSet):
     """
     Вьюсет на базе вьюсета библиотеки Djoser.
     Часть методов переопределена под требования проекта.
@@ -57,7 +58,7 @@ class CustomUserViewSet(UserViewSet):
 
         super().activation(request, *args, **kwargs)
 
-        create_default_ws(user)
+        self.create_default_workspace(user)
 
         refresh = RefreshToken.for_user(user)
 
@@ -90,7 +91,8 @@ class CustomUserViewSet(UserViewSet):
             serializer.user.last_login = now()
         serializer.user.save()
 
-        create_default_ws(serializer.user)
+        self.create_default_workspace(serializer.user)
+
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     @action(["post"], detail=False, url_name='reset_password_invited')

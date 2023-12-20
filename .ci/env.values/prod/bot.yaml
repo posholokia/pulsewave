@@ -1,0 +1,30 @@
+env:
+  PYTHONUNBUFFERED: 1
+  BOT_TOKEN: "{{ .Values.BOT_TOKEN }}"
+  SECRET_KEY: "{{ .Values.APP_DJANGO_SECRET_KEY }}"
+  DB_NAME:
+    valueFrom:
+      secretKeyRef:
+        name: pulsewave-pgsql-creds
+        key: database
+  DB_USER:
+    valueFrom:
+      secretKeyRef:
+        name: pulsewave-pgsql-creds
+        key: user
+  DB_PASSWORD:
+    valueFrom:
+      secretKeyRef:
+        name: pulsewave-pgsql-creds
+        key: password
+  DB_HOST:
+    valueFrom:
+      secretKeyRef:
+        name: pulsewave-pgsql-creds
+        key: host
+  DB_PORT: 6432
+
+imagePullSecrets:
+  - name: gitlab-cr
+
+replicaCount: 1

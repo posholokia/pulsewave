@@ -107,3 +107,14 @@ profiles:
             valuesFiles:
               - ".ci/env.values/celery-worker.yaml"
               - ".ci/env.values/prod/celery.yaml"
+          - <<: *app-release
+            name: &app-bot pwave-backend-bot
+            namespace: default
+            setValueTemplates:
+              image.name: "{{.IMAGE_FULLY_QUALIFIED_pwave_backend_drfapi}}"
+              GIT_REPO: *app-bot
+              APP_DJANGO_SECRET_KEY: "{{.APP_DJANGO_SECRET_KEY}}"
+              BOT_TOKEN: "{{.APP_BOT_TOKEN}}"
+            valuesFiles:
+              - ".ci/env.values/bot.yaml"
+              - ".ci/env.values/prod/bot.yaml"

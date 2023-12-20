@@ -50,25 +50,21 @@ class WorkSpaceSerializersTestCase(APITestCase):
                 'email': 'user1@example.com',
                 'name': '',
                 'represent_name': 'user1',
-                'avatar': None
+                'avatar': None,
+                'role': 'Owner',
             }],
             'invited': [{
                 'id': self.user2.id,
                 'email': 'test-user2@example.com',
                 'name': '',
                 'represent_name': 'test-user2',
-                'avatar': None
+                'avatar': None,
+                'role': 'Invited',
+
             }],
             'boards': [{
                 'id': self.board.id,
                 'name': 'test board',
-                'members': [{
-                    'id': self.user.id,
-                    'email': 'user1@example.com',
-                    'name': '',
-                    'represent_name': 'user1',
-                    'avatar': None
-                }]
             }]
         }
 
@@ -131,12 +127,12 @@ class WorkSpaceSerializersTestCase(APITestCase):
                     'email': 'user3@example.com',
                     'name': '',
                     'represent_name': 'user3',
-                    'avatar': None}
-        self.EXAMPLE_WS['invited'].append(new_user)
-        response = self.client.post(reverse('workspace-invite_user', kwargs={'pk': self.ws1.id}), data).data
+                    'avatar': None,
+                    'role': 'Invited', }
 
+        response = self.client.post(reverse('workspace-invite_user', kwargs={'pk': self.ws1.id}), data).data
         self.assertEquals(WorkSpaceSerializer(self.ws1).data, response)
-        self.assertEquals(self.EXAMPLE_WS, response)
+        self.assertIn(new_user, response['invited'])
 
     def test_invite_new_user(self):
         data = {
@@ -149,11 +145,11 @@ class WorkSpaceSerializersTestCase(APITestCase):
                 'email': 'new_user@example.com',
                 'name': '',
                 'represent_name': 'new_user',
-                'avatar': None}
-        self.EXAMPLE_WS['invited'].append(user)
+                'avatar': None,
+                'role': 'Invited', }
 
         self.assertEquals(WorkSpaceSerializer(self.ws1).data, response)
-        self.assertEquals(self.EXAMPLE_WS, response)
+        self.assertIn(user, response['invited'])
 
     def test_confirm_invite_exists_user(self):
         token = crypto.get_random_string(length=32)
@@ -179,7 +175,6 @@ class WorkSpaceSerializersTestCase(APITestCase):
         invitation_data = {'token': token,
                            'user': 'invited-user@example.com',
                            'workspace': self.ws1.id}
-        # print(f'\n\n{response.status_code=}')
         self.assertEquals(InviteUserSerializer(InvitedUsers.objects.get(token=token)).data, response)
         self.assertEquals(invitation_data, response)
 
@@ -239,4 +234,3 @@ class WorkSpaceSerializersTestCase(APITestCase):
 
         self.assertEquals(invited_user.id, AccessToken(token=access)['user_id'])
         self.assertEquals(invited_user.id, RefreshToken(token=refresh)['user_id'])
-

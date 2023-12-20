@@ -35,8 +35,8 @@ class WorkSpaceTestCase(APITestCase):
 
         user_data['email'] = 'user2@example.com'
         self.user_two = User.objects.create_user(**user_data)
-        ws2 = WorkSpace.objects.create(owner=self.user_two, name='WorkSpace2')
-        ws2.users.add(self.user_two)
+        self.ws2 = WorkSpace.objects.create(owner=self.user_two, name='WorkSpace2')
+        self.ws2.users.add(self.user_two)
 
         self.no_auth_client = APIClient()
         inactive_user = {
@@ -78,6 +78,10 @@ class WorkSpaceTestCase(APITestCase):
         response = self.client.get(reverse('workspace-detail', kwargs={'pk': self.ws1.id}))
         self.assertEquals(status.HTTP_200_OK, response.status_code)
 
+    def test_get_else_ws(self):
+        response = self.client.get(reverse('workspace-detail', kwargs={'pk': self.ws2.id}))
+        self.assertEquals(status.HTTP_404_NOT_FOUND, response.status_code)
+
     def test_patch_ws(self):
         data = {
             'name': 'Changed name',
@@ -87,6 +91,14 @@ class WorkSpaceTestCase(APITestCase):
         self.assertEquals(status.HTTP_200_OK, response.status_code)
         self.ws1.refresh_from_db()
         self.assertEquals('Changed name', self.ws1.name)
+
+    def test_patch_else_ws(self):
+        data = {
+            'name': 'Changed name',
+        }
+        response = self.client.patch(reverse('workspace-detail', kwargs={'pk': self.ws2.id}),
+                                     data=data)
+        self.assertEquals(status.HTTP_404_NOT_FOUND, response.status_code)
 
     def test_put_ws(self):
         data = {
@@ -98,10 +110,22 @@ class WorkSpaceTestCase(APITestCase):
         self.ws1.refresh_from_db()
         self.assertEquals('Changed name', self.ws1.name)
 
+    def test_put_else_ws(self):
+        data = {
+            'name': 'Changed name',
+        }
+        response = self.client.put(reverse('workspace-detail', kwargs={'pk': self.ws2.id}),
+                                   data=data)
+        self.assertEquals(status.HTTP_404_NOT_FOUND, response.status_code)
+
     def test_delete_ws(self):
         response = self.client.delete(reverse('workspace-detail', kwargs={'pk': self.ws1.id}))
         self.assertEquals(status.HTTP_204_NO_CONTENT, response.status_code)
         self.assertEquals(0, len(self.user.owned_workspaces.all()))
+
+    def test_delete_else_ws(self):
+        response = self.client.delete(reverse('workspace-detail', kwargs={'pk': self.ws2.id}))
+        self.assertEquals(status.HTTP_404_NOT_FOUND, response.status_code)
 
     def test_invite_exists_user(self):
         data = {
@@ -153,6 +177,7 @@ class WorkSpaceTestCase(APITestCase):
         self.ws1.invited.add(self.user_two)
         response = self.client.post(reverse('workspace-invite_user', kwargs={'pk': self.ws1.id}), data)
         self.assertEquals(status.HTTP_400_BAD_REQUEST, response.status_code)
+        print(f'\n\n{response.json()=}')
 
         invited_users = InvitedUsers.objects.filter(
             user__email=data['email'],
@@ -172,17 +197,26 @@ class WorkSpaceTestCase(APITestCase):
         self.assertFalse(InvitedUsers.objects.filter(token=token))
 
     def test_confirm_invite_new_user(self):
-        data = {
-            'email': 'user3@example.com',
-        }
-        self.client.post(reverse('workspace-invite_user', kwargs={'pk': self.ws1.id}), data)
-        token = InvitedUsers.objects.get(user__email=data['email']).token
-
-        response = self.no_auth_client.post(reverse('workspace-confirm_invite'), {'token': token})
+        response = self.no_auth_client.post(reverse('workspace-confirm_invite'), {'token': self.token})
         self.assertEquals(status.HTTP_200_OK, response.status_code)
         self.assertEquals(0, len(self.ws1.invited.all()))
         self.assertEquals(2, len(self.ws1.users.all()))
-        self.assertTrue(InvitedUsers.objects.filter(token=token))
+        self.assertTrue(InvitedUsers.objects.filter(token=self.token))
+
+    def test_confirm_second_time_newuser(self):
+        self.no_auth_client.post(reverse('workspace-confirm_invite'), {'token': self.token})
+        response = self.no_auth_client.post(reverse('workspace-confirm_invite'), {'token': self.token})
+
+        self.assertEquals(status.HTTP_200_OK, response.status_code)
+
+    def test_confirm_second_time_exist_user(self):
+        self.ws1.invited.add(self.user_two)
+        token = crypto.get_random_string(length=32)
+        InvitedUsers.objects.create(user=self.user_two, workspace=self.ws1, token=token)
+
+        self.no_auth_client.post(reverse('workspace-confirm_invite'), {'token': token})
+        response = self.no_auth_client.post(reverse('workspace-confirm_invite'), {'token': token})
+        self.assertEquals(status.HTTP_400_BAD_REQUEST, response.status_code)
 
     def test_permission_confirm_invite(self):
         self.ws1.invited.add(self.invited_user)
@@ -237,19 +271,19 @@ class WorkSpaceTestCase(APITestCase):
         }
         self.client.post(reverse('workspace-invite_user', kwargs={'pk': self.ws1.id}), data)
         token = InvitedUsers.objects.get(user__email=data['email']).token
-        self.ws1.users.add(self.user_two)
+        self.no_auth_client.post(reverse('workspace-confirm_invite'), {'token': token})
 
         response = self.no_auth_client.post(reverse('workspace-confirm_invite'), {'token': token})
         self.assertEquals(status.HTTP_400_BAD_REQUEST, response.status_code)
-        self.assertEquals('already_invited', response.data['token'][0].code)
+        self.assertEquals('invalid_token', response.data['token'][0].code)
 
     def test_fail_confirm_invitation_canceled(self):
-        data = {
-            'email': 'user2@example.com',
-        }
-        self.client.post(reverse('workspace-invite_user', kwargs={'pk': self.ws1.id}), data)
-        token = InvitedUsers.objects.get(user__email=data['email']).token
-        self.ws1.invited.remove(self.user_two)
+        token = crypto.get_random_string(length=32)
+        InvitedUsers.objects.create(user=self.user_two, workspace=self.ws1, token=token)
+        self.ws1.invited.add(self.user_two)
+
+        data = {'user_id': self.user_two.id, }
+        self.client.post(reverse('workspace-kick_user', kwargs={'pk': self.ws1.id}), data)
 
         response = self.no_auth_client.post(reverse('workspace-confirm_invite'), {'token': token})
         self.assertEquals(status.HTTP_400_BAD_REQUEST, response.status_code)
@@ -355,5 +389,3 @@ class WorkSpaceTestCase(APITestCase):
         self.invited_user.refresh_from_db()
         self.assertEquals(False, self.invited_user.has_usable_password())
         self.assertEquals(False, self.invited_user.is_active)
-
-
